@@ -1,0 +1,60 @@
+name: Phantom code check
+description: Check that the functions, files, lines and code an issue or pull request mentions exist in the repository.
+branding:
+  icon: search
+  color: purple
+
+inputs:
+  repo:
+    description: The checked-out repository to check against.
+    default: .
+  file:
+    description: Check this file instead of the text of the issue or pull request.
+    default: ''
+  comment:
+    description: >-
+      When to comment on the issue or pull request: "missing" (something it mentions is not in the repository),
+      "doubtful" (also when something is there but not as described), "always" or "never".
+      A comment phantom made before is always brought up to date.
+    default: missing
+  fail-on-missing:
+    description: Fail the step when something mentioned is not in the repository.
+    default: 'false'
+  token:
+    description: The token to comment with.
+    default: ${{ github.token }}
+
+outputs:
+  mentioned:
+    description: How many pieces of code the text mentions.
+    value: ${{ steps.check.outputs.mentioned }}
+  missing:
+    description: How many of them are not in the repository.
+    value: ${{ steps.check.outputs.missing }}
+  doubtful:
+    description: How many are there, but not as described.
+    value: ${{ steps.check.outputs.doubtful }}
+  report:
+    description: The path of the report, in Markdown.
+    value: ${{ steps.check.outputs.report }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: stable
+        cache: false
+    - name: Build phantom
+      shell: bash
+      run: go build -C "$GITHUB_ACTION_PATH" -o "$RUNNER_TEMP/phantom" .
+    - id: check
+      name: Check the code the text mentions
+      shell: bash
+      env:
+        PHANTOM_REPO: ${{ inputs.repo }}
+        PHANTOM_FILE: ${{ inputs.file }}
+        PHANTOM_COMMENT: ${{ inputs.comment }}
+        PHANTOM_FAIL: ${{ inputs.fail-on-missing }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: bash "$GITHUB_ACTION_PATH/action.sh"
