@@ -14,7 +14,7 @@ This mentions 13 pieces of code, and 4 of them are not in the repository.
 Not in the repository
   ✗ tiny_decode_url()         named like this project's code, but appears nowhere in it
   ✗ src/url_parser.c line 40  no such file
-  ✗ line 400 of lib/url.c     lib/url.c has only 22 lines
+  ✗ line 400 of lib/url.c     lib/url.c has only 21 lines
   ✗ --follow-redirects        not an option anywhere in the repository
 
 There, but not as described
@@ -119,7 +119,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: johnmikel/phantom@v0.1.1
+      - uses: johnmikel/phantom@v0.1.2
 ```
 
 This repository runs that workflow on its own issues. [Issue #1](https://github.com/johnmikel/phantom/issues/1) is a demo: phantom's comment flagged a made-up bug report, and cleared itself when the report was edited to cite real code. The edit history of the issue and of the comment shows both versions.

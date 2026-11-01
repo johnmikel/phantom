@@ -217,7 +217,8 @@ func walk(root string) ([]string, error) {
 }
 
 func (r *Repo) index(file, text string) {
-	lines := strings.Split(text, "\n")
+	// A final newline ends the last line; it does not start another.
+	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 	r.files[file] = lines
 	if lang := family(path.Base(file)); lang != "" {
 		r.langs[lang]++

@@ -142,7 +142,7 @@ func TestReports(t *testing.T) {
 	var b strings.Builder
 	rep.Text(&b, false)
 	for _, want := range []string{"and 4 of them are not in the repository", "✗ tiny_decode_url()", "named like this project's code",
-		"lib/url.c has only 22 lines", "Not from this repository"} {
+		"lib/url.c has only 21 lines", "Not from this repository"} {
 		if !strings.Contains(b.String(), want) {
 			t.Errorf("text report lacks %q:\n%s", want, b.String())
 		}
@@ -295,5 +295,56 @@ func TestMadeUpNames(t *testing.T) {
 				t.Errorf("%s: unexpected reference %q (%s, %s)", c.repo, text, res.Status, res.Note)
 			}
 		}
+	}
+}
+
+func TestLineCounts(t *testing.T) {
+	r, _ := sample(t)
+	res := r.Check(Extract("See line 22 of lib/url.c, and lib/url.c itself."))
+	want := map[string]string{
+		"line 22 of lib/url.c": "lib/url.c has only 21 lines", // the file ends with a newline, not a 22nd line
+		"lib/url.c":            "21 lines",
+	}
+	for _, x := range res {
+		if n, ok := want[x.Text]; ok && x.Note != n {
+			t.Errorf("%s: note = %q, want %q", x.Text, x.Note, n)
+		}
+		delete(want, x.Text)
+	}
+	if len(want) > 0 {
+		t.Errorf("not found: %v in %+v", want, res)
+	}
+}
+
+func TestLineAtTheStartOfASentence(t *testing.T) {
+	r, _ := sample(t)
+	res := r.Check(Extract("Line 400 of lib/url.c overflows."))
+	if len(res) != 1 || res[0].Text != "Line 400 of lib/url.c" || res[0].Status != Missing {
+		t.Errorf("results = %+v", res)
+	}
+}
+
+func TestOptionsInACommandThatNamesAFile(t *testing.T) {
+	r, _ := sample(t)
+	got := map[string]Status{}
+	for _, x := range r.Check(Extract("Run `tiny --insecure --follow-symlinks urls.txt` to see it.")) {
+		got[x.Text] = x.Status
+	}
+	if got["--insecure"] != Exists || got["--follow-symlinks"] != Missing {
+		t.Errorf("results = %v", got)
+	}
+}
+
+func TestWording(t *testing.T) {
+	r, _ := sample(t)
+	one := "```c\nint tiny_parse_url(const char *text, struct tiny_url *out)\n```\n"
+	res := r.Check(Extract(one))
+	if len(res) != 1 || !strings.HasPrefix(res[0].Note, "its line appears, at lib/url.c:9") {
+		t.Errorf("one line: %+v", res)
+	}
+	var md strings.Builder
+	NewReport("report.md", r.Check(Extract("`tiny_decode_url()` and `TINY_MAX_URL`"))).Markdown(&md)
+	if !strings.Contains(md.String(), "<summary>The other piece of code</summary>") {
+		t.Errorf("summary for one other piece:\n%s", md.String())
 	}
 }

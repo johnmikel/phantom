@@ -384,6 +384,10 @@ func (r *Repo) snippet(ref Ref) (Result, bool) {
 	case found == 0 && n < 3:
 		return Result{Ref: ref, Status: Doubtful, Note: fmt.Sprintf("its %d %s %s not appear, though so short a quote may be paraphrased",
 			n, pick(n, "line", "lines"), pick(n, "does", "do"))}, true
+	case found == n && n == 1:
+		return Result{Ref: ref, Status: Exists, Note: "its line appears, at " + first}, true
+	case found == n:
+		return Result{Ref: ref, Status: Exists, Note: fmt.Sprintf("its %d lines appear, first at %s", n, first)}, true
 	case found*10 >= n*7:
 		return Result{Ref: ref, Status: Exists, Note: fmt.Sprintf("%d of its %d lines %s, first at %s", found, n, pick(found, "appears", "appear"), first)}, true
 	case found*4 >= n:

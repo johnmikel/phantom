@@ -149,6 +149,9 @@ func (r Report) Markdown(w io.Writer) {
 	}
 	if len(found) > 0 {
 		summary := "The other " + count(len(found), "piece of code", "pieces of code")
+		if len(found) == 1 {
+			summary = "The other piece of code"
+		}
 		if len(shown) == 0 {
 			summary = "What was checked"
 		}

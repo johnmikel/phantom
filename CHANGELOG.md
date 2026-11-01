@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.1.2 (1 November 2026)
+
+Fixes four bugs found while writing [a demo issue](https://github.com/johnmikel/phantom/issues/1) for the GitHub Action:
+
+- A file's length was counted one line too long, because the newline that ends the last line was read as the start of another. "line 22 of lib/url.c", for a file of 21 lines, is now missing rather than a blank line.
+- "Line 640 of extract.go" at the start of a sentence is read as a line reference, as "line 640 of extract.go" already was.
+- The options in a command that also names a file, such as `--follow-redirects` in `tiny --follow-redirects urls.txt`, are checked. Only the file used to be.
+- A quoted line found in the repository reads "its line appears", not "1 of its 1 lines appears", and a Markdown report's one remaining piece of code is "The other piece of code".
+
+curl's 49 AI slop reports, and the docs of cobra, requests, FastAPI and tRPC with and without made-up names, get the same results as with v0.1.1.
+
 ## v0.1.1 (1 November 2026)
 
 Catches made-up names in projects whose code, unlike curl's, has no name prefixes, such as most Go, Python and TypeScript projects. On four of them, it flags 81% of made-up members such as `Session.sendSafely()`, against 2% before. See [docs/languages-evaluation.md](docs/languages-evaluation.md).

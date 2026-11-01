@@ -117,8 +117,8 @@ var (
 	// A file path, then perhaps :12, :12-30 or #L12-L30.
 	filePath = regexp.MustCompile(`(?:^|[\s(\["'<,])((?:\.{1,2}/)?(?:[\w.@+-]+/)*(?:[\w@+-][\w.@+-]*\.(?:` + extensions +
 		`)|Makefile|Dockerfile|CMakeLists\.txt))(?::(\d+)(?:-(\d+))?|#L(\d+)(?:-L(\d+))?)?\b`)
-	lineAfter    = regexp.MustCompile(`^[\s,(]*(?:on |at )?(?:lines?|L)\s*(\d+)(?:\s*(?:-|–|to)\s*(\d+))?`)
-	lineBefore   = regexp.MustCompile(`(?:lines?|L)\s*(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s+(?:of|in)\s+$`)
+	lineAfter    = regexp.MustCompile(`^[\s,(]*(?:on |at )?(?:[Ll]ines?|L)\s*(\d+)(?:\s*(?:-|–|to)\s*(\d+))?`)
+	lineBefore   = regexp.MustCompile(`(?:[Ll]ines?|L)\s*(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s+(?:of|in)\s+$`)
 	githubBlob   = regexp.MustCompile(`https?://github\.com/([^/\s]+/[^/\s]+)/blob/[^/\s]+/([^\s#)>\]"'` + "`" + `]+)(?:#L(\d+)(?:-L(\d+))?)?`)
 	codeSpan     = regexp.MustCompile("`([^`\n]+)`")
 	callInProse  = regexp.MustCompile(`\b([A-Za-z_]\w*(?:(?:\.|::|->)[A-Za-z_]\w*)*)\(\)`)
@@ -525,7 +525,8 @@ func sentences(line string) []string {
 // with the rest of the line, so that a line number after the span counts.
 func (x *extractor) span(s string, at int) {
 	switch {
-	case filePath.MatchString(" " + s):
+	case !strings.ContainsAny(s, " \t") && filePath.MatchString(" "+s):
+		// A path, read with the prose; a command that names a file falls through.
 	case strings.HasPrefix(s, "--") && flagInText.MatchString(s):
 		x.add(Ref{Kind: Flag, Text: s, Name: flagInText.FindStringSubmatch(s)[1], At: at})
 	case hexOnly.MatchString(s) && strings.ContainsAny(s, "0123456789") && strings.ContainsAny(s, "abcdef"):
