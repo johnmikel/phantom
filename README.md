@@ -122,6 +122,8 @@ jobs:
       - uses: johnmikel/phantom@v0.1.1
 ```
 
+This repository runs that workflow on its own issues. [Issue #1](https://github.com/johnmikel/phantom/issues/1) is a demo: phantom's comment flagged a made-up bug report, and cleared itself when the report was edited to cite real code. The edit history of the issue and of the comment shows both versions.
+
 | Input | Default | |
 |---|---|---|
 | `repo` | `.` | the checked-out repository to check against |
