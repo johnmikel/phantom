@@ -20,7 +20,7 @@ tags = subprocess.run(["git", "-C", curl, "for-each-ref", "--sort=creatordate",
                       capture_output=True, text=True, check=True).stdout.split("\n")
 tags = [t.split() for t in tags if t.strip()]
 rows = []
-for f in sorted(glob.glob(os.path.join(slop, "r*.json"))):
+for f in sorted(glob.glob(os.path.join(slop, "r[0-9]*.json"))):
     try:
         d = json.load(open(f))
     except ValueError:

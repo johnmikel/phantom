@@ -23,7 +23,7 @@ cd .. && go build -o phantom . && python3 eval/curl.py slop ./phantom
 
 ## Results
 
-Of 49 reports, citing 609 pieces of code between them:
+Of 49 reports, citing 608 pieces of code between them:
 
 | | Reports |
 |---|---:|
@@ -51,7 +51,7 @@ On its first run on them, phantom flagged three reports as citing code that is n
 - A name one letter away from a real file now counts as a misspelling only if it is at least 8 characters long. `ssl.h` and `psl.h` are too short to tell.
 - A path that starts with the project's own name, like `curl/lib/telnet.c`, is read as `lib/telnet.c`. This had marked three paths as doubtful.
 
-The numbers above are from after those changes, on all 49 reports.
+The numbers above are from after those changes, on all 49 reports. v0.1.1, which adds checks for names in projects without curl's prefixes, gives every report the same result; it counts one reference fewer, because it no longer reads "Node.js" as a file.
 
 ## What this shows
 
@@ -83,7 +83,7 @@ phantom finds made-up references quickly: about 2 seconds per report on curl's 4
 | [#3230082](https://hackerone.com/reports/3230082) † | 2025-06-30 | 8.14.1 | 21 | ✅ all there |  |
 | [#3231321](https://hackerone.com/reports/3231321) † | 2025-07-01 | 8.14.1 | 17 | ✅ all there |  |
 | [#3242005](https://hackerone.com/reports/3242005) † | 2025-07-09 | 8.14.1 | 23 | ✅ all there |  |
-| [#3249936](https://hackerone.com/reports/3249936) † | 2025-07-13 | 8.14.1 | 6 | ✅ all there |  |
+| [#3249936](https://hackerone.com/reports/3249936) † | 2025-07-13 | 8.14.1 | 5 | ✅ all there |  |
 | [#3250490](https://hackerone.com/reports/3250490) | 2025-07-14 | 8.14.1 | 25 | ✅ all there |  |
 | [#3272982](https://hackerone.com/reports/3272982) | 2025-07-26 | 8.15.0 | 0 | no code to check |  |
 | [#3293884](https://hackerone.com/reports/3293884) | 2025-08-10 | 8.15.0 | 11 | ✅ all there |  |

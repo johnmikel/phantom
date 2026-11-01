@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 	"path"
-	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -70,10 +70,19 @@ func (r *Repo) Check(t Text) []Result {
 // like the project's own code but nowhere in it is the surest sign of
 // something made up, even when only the writer's code calls it.
 func (r *Repo) symbol(ref Ref, own, defined map[string]bool) Result {
+	if owner, part, ours := r.member(ref); part != "" && !defined[part] && !ref.Idea && (ours || !own[part]) {
+		closest, _ := r.closest(part)
+		if ours {
+			return Result{Ref: ref, Status: Missing, Note: owner + " is in the repository, but " + part + " is not", Closest: closest}
+		}
+		return Result{Ref: ref, Status: Doubtful, Note: owner + " is used in the repository, but " + part + " appears nowhere in it",
+			Closest: closest}
+	}
 	if s := r.idents[ref.Name]; s != nil {
 		return Result{Ref: ref, Status: Exists, Note: places(s)}
 	}
 	closest, d := r.closest(ref.Name)
+	file := r.claimedIn(ref.Files)
 	switch {
 	case defined[ref.Name]:
 		return Result{Ref: ref, Status: Foreign, Note: "defined in the writer's own code"}
@@ -85,10 +94,85 @@ func (r *Repo) symbol(ref Ref, own, defined map[string]bool) Result {
 		return Result{Ref: ref, Status: Missing, Note: "named like this project's code, but appears nowhere in it", Closest: closest}
 	case own[ref.Name]:
 		return Result{Ref: ref, Status: Foreign, Note: "only in the writer's own code"}
+	case file != "":
+		return Result{Ref: ref, Status: Missing, Note: "mentioned with " + file + ", but appears nowhere in the repository", Closest: closest}
 	case len(closest) > 0 && d <= 1 && len(ref.Name) >= 8:
 		return Result{Ref: ref, Status: Missing, Note: "appears nowhere in the repository", Closest: closest}
 	}
 	return Result{Ref: ref, Status: Foreign, Note: "appears nowhere, and is not named like this project's code"}
+}
+
+// member checks a name written as a member of something, such as
+// check.Parse, Repo::get or cmd.Flags(). When the project defines it or its
+// code uses it, each part after it must be in the code too: member returns
+// the first that is not, what it was a member of, and whether the project
+// defines that (ours) or only uses it, as it uses a variable.
+func (r *Repo) member(ref Ref) (owner, part string, ours bool) {
+	if len(ref.Qual) == 0 {
+		return "", "", false
+	}
+	root := ref.Qual[0]
+	if libraries[root] && root != r.name || !r.declared[root] && !r.used[root] {
+		return "", "", false // a standard library's module, such as os in os.path.join, or not this project's
+	}
+	parts := append(slices.Clone(ref.Qual[1:]), ref.Name)
+	for i, p := range parts {
+		if r.idents[p] == nil {
+			return strings.Join(append([]string{root}, parts[:i]...), "."), p, r.declared[root]
+		}
+	}
+	return "", "", false
+}
+
+// libraries are the modules and objects of languages' standard libraries and
+// runtimes, which a project uses but does not define.
+var libraries = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`self this super cls me it module exports require
+		fmt os io ioutil strings strconv bytes errors time sync atomic context http net url json xml filepath path
+		sort regexp bufio log exec reflect unsafe math rand big template testing flag runtime signal syscall utf8
+		unicode hex base64 sha256 md5 tls x509 crypto zip gzip tar heap list ring slices maps cmp iter
+		sys re datetime random subprocess pathlib collections itertools functools typing logging threading
+		multiprocessing asyncio socket struct hashlib pickle shutil glob string copy uuid urllib unittest pytest
+		argparse csv sqlite3 tempfile traceback inspect contextlib dataclasses enum abc operator queue select ssl
+		zlib zipfile tarfile html email decimal statistics secrets hmac binascii codecs platform warnings weakref
+		ctypes np numpy pd pandas plt torch tf
+		console Math JSON Object Array Promise process window document navigator Number String Date Reflect
+		Symbol Buffer globalThis Intl Error Map Set WeakMap fetch fs util events stream child_process React
+		ReactDOM jest expect vi describe
+		System Arrays Collections List Optional Objects Integer Long Thread Files Paths Collectors
+		std core alloc Vec Option Result Box Rc Arc HashMap HashSet BTreeMap env mem ptr thread boost`) {
+		libraries[w] = true
+	}
+}
+
+// same reports whether a GitHub repository, owner/name, is this one or a
+// fork of it.
+func (r *Repo) same(site string) bool {
+	_, name, _ := strings.Cut(site, "/")
+	_, remote, _ := strings.Cut(r.remote, "/")
+	return strings.EqualFold(name, r.name) || remote != "" && strings.EqualFold(name, remote)
+}
+
+// claimedIn returns the first of files that is in the repository, as
+// written or under a folder, or "".
+func (r *Repo) claimedIn(files []string) string {
+	for _, f := range files {
+		p := cleanPath(f)
+		if top, rest, ok := strings.Cut(p, "/"); ok && strings.EqualFold(top, r.name) {
+			p = rest
+		}
+		if r.files[p] != nil {
+			return p
+		}
+		for _, g := range r.bases[path.Base(p)] {
+			if strings.HasSuffix(g, "/"+p) {
+				return g
+			}
+		}
+	}
+	return ""
 }
 
 // styled reports whether a name starts the way the repository's own names
@@ -128,8 +212,11 @@ func init() {
 }
 
 func (r *Repo) file(ref Ref, own map[string]bool) Result {
+	if ref.Site != "" && !r.same(ref.Site) {
+		return Result{Ref: ref, Status: Foreign, Note: "a file in another repository, " + ref.Site}
+	}
 	p := cleanPath(ref.Path)
-	if top, rest, ok := strings.Cut(p, "/"); ok && strings.EqualFold(top, filepath.Base(r.Root)) && (r.files[rest] != nil || r.dirs[rest]) {
+	if top, rest, ok := strings.Cut(p, "/"); ok && strings.EqualFold(top, r.name) && (r.files[rest] != nil || r.dirs[rest]) {
 		p = rest // curl/lib/ws.c, written in the curl repository
 	}
 	at := p
@@ -162,7 +249,7 @@ func (r *Repo) file(ref Ref, own map[string]bool) Result {
 			// such as ssl.h for psl.h, is more likely a library's.
 			closest, d := r.closestFile(p)
 			top := strings.Split(p, "/")[0]
-			if strings.Contains(p, "/") && r.dirs[top] || d <= 1 && len(path.Base(p)) >= 8 {
+			if strings.Contains(p, "/") && r.dirs[top] || !strings.Contains(p, "/") && d <= 1 && len(p) >= 8 {
 				return Result{Ref: ref, Status: Missing, Note: "no such file", Closest: closest}
 			}
 			return Result{Ref: ref, Status: Foreign, Note: "not in the repository, so probably the writer's own file or a library's"}
@@ -321,7 +408,7 @@ func (r *Repo) flag(ref Ref) Result {
 	}
 	sort.Strings(close)
 	close = close[:min(3, len(close))]
-	if ref.Cmd != "" && strings.EqualFold(ref.Cmd, filepath.Base(r.Root)) {
+	if ref.Cmd != "" && strings.EqualFold(ref.Cmd, r.name) {
 		return Result{Ref: ref, Status: Missing, Note: "not an option anywhere in the repository", Closest: close}
 	}
 	return Result{Ref: ref, Status: Foreign, Note: "not one of this project's options; perhaps another program's"}
@@ -435,7 +522,11 @@ func cleanPath(p string) string {
 	for _, pre := range []string{"a/", "b/"} {
 		p = strings.TrimPrefix(p, pre)
 	}
-	return path.Clean(p)
+	p = path.Clean(p)
+	for strings.HasPrefix(p, "../") {
+		p = p[3:] // relative to a folder the text does not name
+	}
+	return p
 }
 
 func places(s *seen) string {

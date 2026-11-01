@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,6 +29,12 @@ type Repo struct {
 	langs   map[string]int  // code files per language
 	main    map[string]bool // the languages the project is written in
 	styles  map[string]bool // name prefixes typical of the project, such as curl_ and CURLOPT_
+	// The modules, packages, folders and types the project defines, which
+	// a name can be written as a member of, as check in check.Parse.
+	declared map[string]bool
+	used     map[string]bool // names the code takes members from, as cmd in cmd.Flags()
+	name     string          // the project's name, from its folder
+	remote   string          // the GitHub repository it was cloned from, as owner/name, if known
 }
 
 // common are name prefixes too ordinary to say a name belongs to a project.
@@ -86,17 +93,28 @@ func Open(root string) (*Repo, error) {
 	}
 	r := &Repo{Root: abs, files: map[string][]string{}, bases: map[string][]string{}, folded: map[string][]string{}, dirs: map[string]bool{},
 		idents: map[string]*seen{}, flags: map[string]*seen{}, lines: map[string]*seen{}, byChar: map[byte][]string{},
-		langs: map[string]int{}, main: map[string]bool{}, styles: map[string]bool{}}
+		langs: map[string]int{}, main: map[string]bool{}, styles: map[string]bool{}, declared: map[string]bool{}, used: map[string]bool{},
+		name: filepath.Base(abs)}
+	r.declared[r.name] = true
 	paths, git := tracked(abs)
 	if !git {
 		if paths, err = walk(abs); err != nil {
 			return nil, err
 		}
 	}
+	// Code first, so that where a name is first found is in the code, not
+	// in a README that mentions it.
+	sort.SliceStable(paths, func(i, j int) bool {
+		return family(path.Base(paths[i])) != "" && family(path.Base(paths[j])) == ""
+	})
 	r.Git = git
 	if git {
 		out, _ := exec.Command("git", "-C", abs, "rev-parse", "--is-shallow-repository").Output()
 		r.Shallow = strings.TrimSpace(string(out)) == "true"
+		out, _ = exec.Command("git", "-C", abs, "remote", "get-url", "origin").Output()
+		if m := githubRemote.FindStringSubmatch(strings.TrimSpace(string(out))); m != nil {
+			r.remote = m[1]
+		}
 	}
 	for _, p := range paths {
 		data, err := os.ReadFile(filepath.Join(abs, filepath.FromSlash(p)))
@@ -165,9 +183,10 @@ func family(name string) string {
 	return families[ext]
 }
 
-// tracked lists the files git tracks under root, if root is in a git checkout.
+// tracked lists the files under root that git tracks, or would if they were
+// added (new files it does not ignore), if root is in a git checkout.
 func tracked(root string) ([]string, bool) {
-	out, err := exec.Command("git", "-C", root, "ls-files", "-z").Output()
+	out, err := exec.Command("git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard").Output()
 	if err != nil {
 		return nil, false
 	}
@@ -207,6 +226,11 @@ func (r *Repo) index(file, text string) {
 	r.folded[strings.ToLower(path.Base(file))] = append(r.folded[strings.ToLower(path.Base(file))], file)
 	for d := path.Dir(file); d != "." && d != "/" && !r.dirs[d]; d = path.Dir(d) {
 		r.dirs[d] = true
+		r.declared[path.Base(d)] = true
+	}
+	code := family(path.Base(file)) != ""
+	if code {
+		r.declared[strings.TrimSuffix(path.Base(file), path.Ext(file))] = true
 	}
 	for i, line := range lines {
 		n := i + 1
@@ -217,8 +241,23 @@ func (r *Repo) index(file, text string) {
 		if l := even(line); l != "" {
 			note(r.lines, l, file, n)
 		}
+		if code {
+			if m := declares.FindStringSubmatch(line); m != nil {
+				r.declared[m[1]] = true
+			}
+			roots(line, func(w string) { r.used[w] = true })
+		}
 	}
 }
+
+// githubRemote reads owner/name from a GitHub remote, over HTTPS or SSH.
+var githubRemote = regexp.MustCompile(`github\.com[:/]([^/]+/[^/]+?)(?:\.git)?/?$`)
+
+// declares finds the package, module or type a line of code defines, as in
+// "type Repo struct", "export class Session" or "pub mod parser".
+var declares = regexp.MustCompile(`^\s*(?:(?:export|default|declare|pub(?:\([\w:]+\))?|public|private|protected|internal|` +
+	`abstract|final|sealed|static|data|case|open|partial)\s+)*(?:package|type|class|interface|enum|struct|union|trait|mod|` +
+	`impl|namespace|module|object|record|protocol|extension)\s+([A-Za-z_]\w*)`)
 
 func note(m map[string]*seen, key, file string, line int) {
 	s := m[key]
@@ -241,6 +280,29 @@ func words(line string, f func(string)) {
 			j++
 		}
 		if i == 0 || !(line[i-1] >= '0' && line[i-1] <= '9') {
+			f(line[i:j])
+		}
+		i = j
+	}
+}
+
+// roots calls f with each name in line that a member is taken from, as cmd
+// in cmd.Flags() or conn in conn->data, but not data.
+func roots(line string, f func(string)) {
+	for i := 0; i < len(line); {
+		if !identStart(line[i]) {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(line) && (identStart(line[j]) || line[j] >= '0' && line[j] <= '9') {
+			j++
+		}
+		rest := line[j:]
+		after := strings.HasPrefix(rest, ".") && len(rest) > 1 && identStart(rest[1]) ||
+			strings.HasPrefix(rest, "->") || strings.HasPrefix(rest, "::")
+		before := i > 0 && (line[i-1] == '.' || line[i-1] == '>' || line[i-1] == ':' || line[i-1] >= '0' && line[i-1] <= '9')
+		if after && !before {
 			f(line[i:j])
 		}
 		i = j

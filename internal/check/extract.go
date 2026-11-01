@@ -5,8 +5,10 @@
 package check
 
 import (
+	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -28,6 +30,7 @@ type Ref struct {
 	Text string   `json:"text"`           // as written
 	Name string   `json:"name,omitempty"` // the symbol, flag or commit
 	Path string   `json:"path,omitempty"` // the file
+	Site string   `json:"site,omitempty"` // for a link to a file on GitHub: the repository, as owner/name
 	Line int      `json:"line,omitempty"` // a line number in the file, if given
 	End  int      `json:"end,omitempty"`  // the last line of a range
 	Lang string   `json:"lang,omitempty"` // a code block's language
@@ -38,6 +41,12 @@ type Ref struct {
 	Aim  string   `json:"-"`              // for a code block: "quote" of the repository, "other" code, or "" if unclear
 	Cmd  string   `json:"-"`              // for a flag: the command it was given to, such as curl
 	Idea bool     `json:"-"`              // named in a suggestion ("replace X with Y"), not claimed to exist
+	// For a symbol written as a member, such as check.Parse or Repo::get:
+	// what it is a member of.
+	Qual []string `json:"-"`
+	// For a symbol: the files named in the same sentence, which it is said
+	// to be in.
+	Files []string `json:"-"`
 }
 
 // Text is what Extract finds in a piece of text.
@@ -110,7 +119,7 @@ var (
 		`)|Makefile|Dockerfile|CMakeLists\.txt))(?::(\d+)(?:-(\d+))?|#L(\d+)(?:-L(\d+))?)?\b`)
 	lineAfter    = regexp.MustCompile(`^[\s,(]*(?:on |at )?(?:lines?|L)\s*(\d+)(?:\s*(?:-|–|to)\s*(\d+))?`)
 	lineBefore   = regexp.MustCompile(`(?:lines?|L)\s*(\d+)(?:\s*(?:-|–|to)\s*(\d+))?\s+(?:of|in)\s+$`)
-	githubBlob   = regexp.MustCompile(`https?://github\.com/[^/\s]+/[^/\s]+/blob/[^/\s]+/([^\s#)>\]]+)(?:#L(\d+)(?:-L(\d+))?)?`)
+	githubBlob   = regexp.MustCompile(`https?://github\.com/([^/\s]+/[^/\s]+)/blob/[^/\s]+/([^\s#)>\]"'` + "`" + `]+)(?:#L(\d+)(?:-L(\d+))?)?`)
 	codeSpan     = regexp.MustCompile("`([^`\n]+)`")
 	callInProse  = regexp.MustCompile(`\b([A-Za-z_]\w*(?:(?:\.|::|->)[A-Za-z_]\w*)*)\(\)`)
 	callWithArgs = regexp.MustCompile(`\b([A-Za-z_]\w*)\(([\w\s,*&.>\[\]"'-]+)\)`)
@@ -120,9 +129,25 @@ var (
 	qualified    = regexp.MustCompile(`^[A-Za-z_]\w*(?:(?:\.|::|->)[A-Za-z_]\w*)*$`)
 	callLike     = regexp.MustCompile(`^([A-Za-z_]\w*(?:(?:\.|::|->)[A-Za-z_]\w*)*)\s*\(`)
 	callAnywhere = regexp.MustCompile(`([A-Za-z_]\w*)\s*\(`)
+	members      = regexp.MustCompile(`\.|::|->`)
 	hexOnly      = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 	digitsOnly   = regexp.MustCompile(`(?:^|_)\d+(?:_|$)`)
 )
+
+// products are names that look like files but are software, such as Node.js.
+var products = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`node.js next.js nuxt.js vue.js express.js react.js angular.js ember.js backbone.js
+		three.js d3.js chart.js nest.js solid.js alpine.js moment.js day.js knockout.js meteor.js gatsby.js p5.js pixi.js
+		leaflet.js highlight.js prism.js popper.js socket.io deno.js bun.js svelte.js preact.js remix.js astro.js`) {
+		products[w] = true
+	}
+}
+
+// domains end host names, which look like a.b.
+var domains = map[string]bool{"com": true, "org": true, "net": true, "edu": true, "gov": true, "info": true, "biz": true,
+	"xyz": true, "localhost": true, "localdomain": true, "example": true, "onion": true, "arpa": true}
 
 // notSymbols are words that are code but say nothing about a repository.
 var notSymbols = map[string]bool{}
@@ -139,7 +164,7 @@ func init() {
 
 // Extract finds the references to code in text, which is usually Markdown.
 func Extract(text string) Text {
-	x := &extractor{seen: map[string]bool{}, loose: Block{Words: map[string]bool{}, Defines: map[string]bool{}}}
+	x := &extractor{index: map[string]int{}, loose: Block{Words: map[string]bool{}, Defines: map[string]bool{}}}
 	lines := strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n")
 	for i := 0; i < len(lines); i++ {
 		fence, info, ok := openFence(lines[i])
@@ -164,19 +189,29 @@ func Extract(text string) Text {
 type extractor struct {
 	refs    []Ref
 	blocks  []Block
-	loose   Block  // code pasted without a fence
-	heading string // the last Markdown heading, lower-cased
-	seen    map[string]bool
-	recent  []string // the last few lines of prose, for what a code block is for
-	symbols []string // the symbols named on the line being read
+	loose   Block          // code pasted without a fence
+	heading string         // the last Markdown heading, lower-cased
+	index   map[string]int // where each reference is in refs, so it is kept once
+	recent  []string       // the last few lines of prose, for what a code block is for
+	symbols []string       // the symbols named on the line being read
+	named   []mention      // the symbols and files named on the line being read
 }
 
-func (x *extractor) add(r Ref) {
-	key := string(r.Kind) + "|" + r.Name + "|" + r.Path + "|" + strconv.Itoa(r.Line) + "|" + r.Code
-	if !x.seen[key] {
-		x.seen[key] = true
-		x.refs = append(x.refs, r)
+// mention is a reference as one line words it.
+type mention struct {
+	ref  int
+	text string
+}
+
+// add records a reference once, and returns where it is in refs.
+func (x *extractor) add(r Ref) int {
+	key := string(r.Kind) + "|" + r.Name + "|" + r.Site + "|" + r.Path + "|" + strconv.Itoa(r.Line) + "|" + r.Code
+	if i, ok := x.index[key]; ok {
+		return i
 	}
+	x.index[key] = len(x.refs)
+	x.refs = append(x.refs, r)
+	return len(x.refs) - 1
 }
 
 // openFence recognises the start of a fenced code block, ``` or ~~~.
@@ -267,7 +302,7 @@ var (
 		"harden", "need to", "you'll", "added", "modified", "updated version", "new version", "secure version", "safer"}
 	// suggestions are words that make the names in a sentence proposals, not claims.
 	suggestions = []string{"replace", "instead", "recommend", "suggest", "should use", "switch to", "migrate to",
-		"consider using", "use a ", "use the ", "could use", "prefer "}
+		"consider using", "could use", "prefer "}
 )
 
 // aim reads the heading and the lines just before a code block, and the
@@ -334,7 +369,7 @@ func (x *extractor) prose(line string, at int) {
 			x.recent = x.recent[1:]
 		}
 	}
-	x.symbols = nil
+	x.symbols, x.named = nil, nil
 	start := len(x.refs)
 	if codeLine(line) {
 		words(line, func(w string) { x.loose.Words[w] = true })
@@ -347,13 +382,21 @@ func (x *extractor) prose(line string, at int) {
 
 	// Links to files on GitHub.
 	for _, m := range githubBlob.FindAllStringSubmatch(line, -1) {
-		x.add(Ref{Kind: File, Text: m[0], Path: m[1], Line: atoi(m[2]), End: atoi(m[3]), At: at})
+		p := strings.TrimRight(m[2], ".,;:!?") // the end of a sentence, not of the path
+		if u, err := url.PathUnescape(p); err == nil {
+			p = u // [trpc].ts, written %5Btrpc%5D.ts
+		}
+		i := x.add(Ref{Kind: File, Text: m[0], Path: p, Line: atoi(m[3]), End: atoi(m[4]), At: at, Site: m[1]})
+		x.named = append(x.named, mention{i, m[0]})
 	}
 	line = githubBlob.ReplaceAllStringFunc(line, blank)
 
 	// Files, with the line numbers written after or before them.
 	plain := strings.ReplaceAll(line, "`", " ")
 	for _, m := range filePath.FindAllStringSubmatchIndex(plain, -1) {
+		if products[strings.ToLower(path.Base(plain[m[2]:m[3]]))] {
+			continue // Node.js, not a file
+		}
 		r := Ref{Kind: File, Text: strings.TrimSpace(plain[m[2]:m[1]]), Path: plain[m[2]:m[3]], At: at}
 		switch {
 		case m[4] >= 0:
@@ -369,7 +412,7 @@ func (x *extractor) prose(line string, at int) {
 				r.Text = strings.TrimSpace(b[0]) + " " + r.Text
 			}
 		}
-		x.add(r)
+		x.named = append(x.named, mention{x.add(r), r.Path})
 	}
 
 	// Code spans: functions, names, flags and commits.
@@ -403,17 +446,79 @@ func (x *extractor) prose(line string, at int) {
 
 	// A line number is a claim about what is there: remember the functions
 	// named alongside it. A suggestion names things that need not exist yet.
-	lowered := strings.ToLower(line)
-	idea := false
-	for _, w := range suggestions {
-		idea = idea || strings.Contains(lowered, w)
-	}
 	for i := start; i < len(x.refs); i++ {
 		if x.refs[i].Kind == File && x.refs[i].Line > 0 {
 			x.refs[i].Near = x.symbols
 		}
-		x.refs[i].Idea = idea && x.refs[i].Kind == Symbol
 	}
+
+	// Sentence by sentence: a name in the same sentence as a file, as in
+	// "Parse in parse.go", is said to be in that file. A name that only a
+	// suggestion mentions, as in "replace X with Y", need not exist yet.
+	claimed := map[int]bool{}
+	for _, s := range sentences(line) {
+		lowered, idea := strings.ToLower(s), false
+		for _, w := range suggestions {
+			idea = idea || strings.Contains(lowered, w)
+		}
+		var files []string
+		for _, m := range x.named {
+			if x.refs[m.ref].Kind == File && strings.Contains(s, m.text) {
+				files = append(files, x.refs[m.ref].Path)
+			}
+		}
+		for _, m := range x.named {
+			r := &x.refs[m.ref]
+			if r.Kind != Symbol || !strings.Contains(s, m.text) && !hasWord(s, r.Name) {
+				continue
+			}
+			for _, f := range files {
+				if !slices.Contains(r.Files, f) {
+					r.Files = append(r.Files, f)
+				}
+			}
+			if m.ref >= start {
+				claimed[m.ref] = claimed[m.ref] || !idea
+				r.Idea = !claimed[m.ref]
+			}
+		}
+	}
+}
+
+// hasWord reports whether s has name as a whole word.
+func hasWord(s, name string) bool {
+	for i := 0; ; {
+		j := strings.Index(s[i:], name)
+		if j < 0 {
+			return false
+		}
+		j += i
+		end := j + len(name)
+		if (j == 0 || !identChar(s[j-1])) && (end == len(s) || !identChar(s[end])) {
+			return true
+		}
+		i = j + 1
+	}
+}
+
+func identChar(c byte) bool { return identStart(c) || c >= '0' && c <= '9' }
+
+// sentences splits a line of prose where its sentences end, keeping code
+// spans whole.
+func sentences(line string) []string {
+	var out []string
+	start, code := 0, false
+	for i := 0; i < len(line); i++ {
+		switch c := line[i]; {
+		case c == '`':
+			code = !code
+		case !code && (c == '.' || c == '!' || c == '?') && i+2 < len(line) && line[i+1] == ' ' &&
+			(line[i+2] >= 'A' && line[i+2] <= 'Z' || line[i+2] == '`' || line[i+2] == '"'):
+			out = append(out, line[start:i+1])
+			start = i + 2
+		}
+	}
+	return append(out, line[start:])
 }
 
 // span classifies the contents of one `code span`. Paths in spans are found
@@ -455,16 +560,23 @@ func command(line string) string {
 	return ""
 }
 
-// symbol records a function or name, keeping only the last part of a.b or A::b.
+// symbol records a function or name. Of a.b, A::b or a->b it keeps b, and
+// what b is a member of.
 func (x *extractor) symbol(text, name string, at int) {
-	if i := strings.LastIndexAny(name, ".:>"); i >= 0 {
-		name = name[i+1:]
-	}
-	if len(name) < 3 || notSymbols[strings.ToLower(name)] {
-		return
+	parts := members.Split(name, -1)
+	name = parts[len(parts)-1]
+	switch {
+	case len(name) < 3, len(parts) == 1 && notSymbols[strings.ToLower(name)]:
+		return // too short to tell, or a keyword; store.New is code, but new is a keyword
+	case len(parts) > 1 && domains[strings.ToLower(name)]:
+		return // evil.com is a host, not code
 	}
 	x.symbols = append(x.symbols, name)
-	x.add(Ref{Kind: Symbol, Text: text, Name: name, At: at})
+	i := x.add(Ref{Kind: Symbol, Text: text, Name: name, At: at})
+	if len(parts) > 1 && len(x.refs[i].Qual) == 0 {
+		x.refs[i].Qual = parts[:len(parts)-1]
+	}
+	x.named = append(x.named, mention{i, text})
 }
 
 // codeish reports whether a word looks like code rather than English: it has

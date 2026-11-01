@@ -210,3 +210,90 @@ func TestPathStartingWithTheProjectName(t *testing.T) {
 		t.Errorf("results = %+v", res)
 	}
 }
+
+func TestGitHubLinksIntoOtherRepositories(t *testing.T) {
+	r, _ := sample(t)
+	res := r.Check(Extract("Compare https://github.com/acme/tiny/blob/main/lib/url.c. And https://github.com/curl/curl/blob/master/lib/url.c, " +
+		"and the encoded https://github.com/acme/tiny/blob/main/lib/%75rl.h#L2."))
+	want := []Status{Exists, Foreign, Exists}
+	if len(res) != len(want) {
+		t.Fatalf("results = %+v", res)
+	}
+	for i, x := range res {
+		if x.Status != want[i] {
+			t.Errorf("%s: %s, %s; want %s", x.Text, x.Status, x.Note, want[i])
+		}
+	}
+}
+
+func TestProductNamesAreNotFiles(t *testing.T) {
+	r, _ := sample(t)
+	if res := r.Check(Extract("It runs on Node.js, Next.js and Express.js, not React.js/Vue.js.")); len(res) != 0 {
+		t.Errorf("results = %+v", res)
+	}
+}
+
+func TestRelativePaths(t *testing.T) {
+	r, _ := sample(t)
+	res := r.Check(Extract("See ../../lib/url.c:9 and ../src/main.c."))
+	if len(res) != 2 || res[0].Status != Exists || res[1].Status != Exists {
+		t.Errorf("results = %+v", res)
+	}
+}
+
+// TestMadeUpNames checks names in projects that, unlike curl, have no name
+// prefixes to go by.
+func TestMadeUpNames(t *testing.T) {
+	for _, c := range []struct {
+		repo, text string
+		want       map[string]Status
+	}{
+		{"gostore", "`store.New()` returns a `Store`, and `Store.Get()` looks a key up. `store.Open()` reads a file, and " +
+			"`Store.Delete()` removes a key. `s.Purge()` empties it. In store/store.go, `evict()` drops old items. " +
+			"`os.ReadFile()` loads it. Replace `Store.Fetch()` with `Store.Get()`.", map[string]Status{
+			"store.New()":    Exists,
+			"Store":          Exists,
+			"Store.Get()":    Exists,
+			"store.Open()":   Missing,  // store is the project's package
+			"Store.Delete()": Missing,  // Store is the project's type
+			"s.Purge()":      Doubtful, // s is only a variable the code uses
+			"store/store.go": Exists,
+			"evict()":        Missing, // said to be in store/store.go
+			"os.ReadFile()":  Foreign, // the standard library's
+			"Store.Fetch()":  Foreign, // only proposed
+		}},
+		{"pyshop", "`Cart.add_item()` adds one, `cart.remove_item()` takes it away, and `pyshop.cart.total()` sums them.", map[string]Status{
+			"Cart.add_item()":     Exists,
+			"cart.remove_item()":  Missing, // cart.py is the project's module
+			"pyshop.cart.total()": Exists,
+		}},
+		{"tsshop", "`AuthService.login()` checks a user and `AuthService.logout()` forgets one. " +
+			"`useSession()` in src/auth.ts returns the service, as does `useToken()` in src/auth.ts. " +
+			"It calls evil.com and `attacker.example.org`.", map[string]Status{
+			"AuthService.login()":  Exists,
+			"AuthService.logout()": Missing,
+			"useSession()":         Exists,
+			"src/auth.ts":          Exists,
+			"useToken()":           Missing,
+		}},
+	} {
+		r, err := Open("../../testdata/" + c.repo)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := map[string]Result{}
+		for _, res := range r.Check(Extract(c.text)) {
+			got[res.Text] = res
+		}
+		for text, status := range c.want {
+			if got[text].Status != status {
+				t.Errorf("%s: %q is %q (%s), want %q", c.repo, text, got[text].Status, got[text].Note, status)
+			}
+		}
+		for text, res := range got {
+			if _, ok := c.want[text]; !ok {
+				t.Errorf("%s: unexpected reference %q (%s, %s)", c.repo, text, res.Status, res.Note)
+			}
+		}
+	}
+}
